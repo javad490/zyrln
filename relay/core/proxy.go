@@ -202,7 +202,7 @@ func handleHTTP(w http.ResponseWriter, r *http.Request, coal *Coalescer, ca *Cer
 		targetURL = scheme + "://" + r.Host + r.URL.RequestURI()
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxProxyRequestBody))
 	if err != nil {
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
@@ -368,7 +368,7 @@ func handleMITMTLS(tlsConn net.Conn, certHost, targetHost string, coal *Coalesce
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(req.Body, 8*1024*1024))
+		body, err := io.ReadAll(io.LimitReader(req.Body, MaxProxyRequestBody))
 		_ = req.Body.Close()
 		if err != nil {
 			_, _ = tlsConn.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
@@ -665,7 +665,7 @@ func handleSOCKSHTTP(conn net.Conn, targetHost string, mode proxyMode, coal *Coa
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(req.Body, 8*1024*1024))
+		body, err := io.ReadAll(io.LimitReader(req.Body, MaxProxyRequestBody))
 		_ = req.Body.Close()
 		if err != nil {
 			writeHTTPError(conn, http.StatusBadRequest, "read body failed")

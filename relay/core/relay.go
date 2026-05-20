@@ -21,7 +21,16 @@ import (
 	"time"
 )
 
-const maxRelayBody = 16 * 1024 * 1024
+// MaxProxyRequestBody is the largest request body the MITM proxy reads for relay paths.
+// Matches relay/vps maxBodyBytes so uploads are not truncated before Apps Script.
+const MaxProxyRequestBody = 32 * 1024 * 1024
+
+const maxRelayBody = MaxProxyRequestBody
+
+// largeUploadBypassBatch skips the coalescer window for big bodies so uploads are not delayed.
+const largeUploadBypassBatch = 5 * 1024 * 1024
+
+const maxRelayTimeout = 10 * time.Minute
 
 // socketProtectFunc, if set, is called with each new TCP socket file descriptor
 // before the connection is established. On Android this should be wired to
@@ -310,6 +319,11 @@ func (c *Coalescer) run() {
 		case <-c.stopCh:
 			return
 		}
+		if bypassesBatch(first) {
+			go c.flushSingle(first)
+			continue
+		}
+
 		batch := []*coalescerItem{first}
 
 		// If requests are already queued behind the first one, widen the
@@ -324,6 +338,10 @@ func (c *Coalescer) run() {
 		for len(batch) < c.maxBatch {
 			select {
 			case item := <-c.ch:
+				if bypassesBatch(item) {
+					go c.flushSingle(item)
+					continue
+				}
 				batch = append(batch, item)
 			case <-timer.C:
 				break collect
@@ -347,8 +365,9 @@ func (c *Coalescer) run() {
 }
 
 func (c *Coalescer) flushSingle(item *coalescerItem) {
+	timeout := relayTimeoutForBody(c.timeout, len(item.body))
 	resp, err := RelayRequestMulti(c.client, c.appScriptURLs, c.frontDomain, c.authKey,
-		item.method, item.targetURL, item.headers, item.body, c.timeout)
+		item.method, item.targetURL, item.headers, item.body, timeout)
 	item.result <- coalescerResult{resp, err}
 }
 
@@ -363,6 +382,10 @@ func requestPriority(item *coalescerItem) int {
 	target := strings.ToLower(item.targetURL)
 	accept := strings.ToLower(headerValue(item.headers, "Accept"))
 	dest := strings.ToLower(headerValue(item.headers, "Sec-Fetch-Dest"))
+
+	if isUploadRequest(item) {
+		return 2
+	}
 
 	if method == "GET" {
 		switch {
@@ -387,6 +410,55 @@ func requestPriority(item *coalescerItem) int {
 		return 80
 	}
 	return 40
+}
+
+func bypassesBatch(item *coalescerItem) bool {
+	return len(item.body) >= largeUploadBypassBatch
+}
+
+func isUploadRequest(item *coalescerItem) bool {
+	if isTelemetryURL(item.targetURL) {
+		return false
+	}
+	method := strings.ToUpper(item.method)
+	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
+		return false
+	}
+	ct := strings.ToLower(headerValue(item.headers, "Content-Type"))
+	if strings.Contains(ct, "multipart/form-data") {
+		return true
+	}
+	target := strings.ToLower(item.targetURL)
+	return strings.Contains(target, "googlevideo.com") ||
+		strings.Contains(target, "upload.youtube") ||
+		strings.Contains(target, "drive.google.com") ||
+		strings.Contains(target, "storage.googleapis.com") ||
+		(strings.Contains(target, "google.com") && strings.Contains(target, "/upload"))
+}
+
+// relayTimeoutForBody extends the base relay timeout for large uploads (+5s per 10MB).
+func relayTimeoutForBody(base time.Duration, bodyLen int) time.Duration {
+	if base <= 0 {
+		base = 45 * time.Second
+	}
+	if bodyLen <= 0 {
+		return base
+	}
+	extra := time.Duration(bodyLen/(10*1024*1024)) * 5 * time.Second
+	if t := base + extra; t > maxRelayTimeout {
+		return maxRelayTimeout
+	}
+	return base + extra
+}
+
+func batchRelayTimeout(base time.Duration, batch []*coalescerItem) time.Duration {
+	maxBody := 0
+	for _, item := range batch {
+		if len(item.body) > maxBody {
+			maxBody = len(item.body)
+		}
+	}
+	return relayTimeoutForBody(base, maxBody)
 }
 
 func headerValue(headers map[string]string, key string) string {
@@ -473,7 +545,8 @@ func (c *Coalescer) flush(batch []*coalescerItem) {
 	var lastErr error
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
-		r, err := appsScriptRoundTrip(ctx, c.client, c.appScriptURLs[idx], c.frontDomain, string(payload), c.timeout)
+		batchTimeout := batchRelayTimeout(c.timeout, batch)
+		r, err := appsScriptRoundTrip(ctx, c.client, c.appScriptURLs[idx], c.frontDomain, string(payload), batchTimeout)
 		if err == nil {
 			raw = r
 			if idx != start {
@@ -500,8 +573,9 @@ func (c *Coalescer) flush(batch []*coalescerItem) {
 			wg.Add(1)
 			go func(it *coalescerItem) {
 				defer wg.Done()
+				timeout := relayTimeoutForBody(c.timeout, len(it.body))
 				resp, err := RelayRequestMulti(c.client, c.appScriptURLs, c.frontDomain, c.authKey,
-					it.method, it.targetURL, it.headers, it.body, c.timeout)
+					it.method, it.targetURL, it.headers, it.body, timeout)
 				it.result <- coalescerResult{resp, err}
 			}(item)
 		}
