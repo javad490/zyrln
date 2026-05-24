@@ -1,6 +1,18 @@
 package tunnel
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+func TestBatchErrorNeedsSequential(t *testing.T) {
+	if !batchErrorNeedsSequential(errors.New("bad url")) {
+		t.Fatal("expected bad url to be sequential")
+	}
+	if batchErrorNeedsSequential(errors.New("unauthorized")) {
+		t.Fatal("unauthorized should not be sequential")
+	}
+}
 
 func TestIsRetryableAppsScriptError(t *testing.T) {
 	tests := []struct {

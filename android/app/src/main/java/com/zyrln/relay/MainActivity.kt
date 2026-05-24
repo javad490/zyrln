@@ -173,7 +173,7 @@ class MainActivity : AppCompatActivity() {
             AnimatorInflater.loadStateListAnimator(this, R.animator.btn_press)
 
         syncModeFromPrefs()
-        Mobile.setDirectEnabled(prefs.getBoolean("direct_enabled", directOnlySelected))
+        applyDirectEnabledFromPrefs()
         updateUI(running = Mobile.isRunning())
         updateLanguageButton()
         updateThemeButton()
@@ -216,6 +216,7 @@ class MainActivity : AppCompatActivity() {
         androidx.core.content.ContextCompat.registerReceiver(this, errorReceiver, IntentFilter(RelayVpnService.ACTION_ERROR), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         startLogPolling()
         syncModeFromPrefs()
+        applyDirectEnabledFromPrefs()
         if (Mobile.isRunning()) resumeUptimeTicker() else stopUptimeTicker()
         updateUI(running = Mobile.isRunning())
     }
@@ -630,7 +631,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyDirectEnabledFromPrefs() {
+        val hasRelay = !prefs.getString("url", null).isNullOrEmpty() &&
+            !prefs.getBoolean("direct_only", DEFAULT_DIRECT_ONLY)
+        if (hasRelay && !prefs.getBoolean("direct_opt_out", false)) {
+            // Builds before v1.6 defaulted relay profiles to direct OFF; turn Google bypass on.
+            if (!prefs.getBoolean("direct_enabled", true)) {
+                prefs.edit().putBoolean("direct_enabled", true).apply()
+            }
+        }
+        Mobile.setDirectEnabled(prefs.getBoolean("direct_enabled", true))
+    }
+
     private fun launchRelayService() {
+        applyDirectEnabledFromPrefs()
         val url = prefs.getString("url", "") ?: ""
         val key = prefs.getString("key", "") ?: ""
         playMotion(binding.btnConnect, R.anim.motion_confirm)
@@ -756,7 +770,10 @@ class MainActivity : AppCompatActivity() {
         if (selectedUrl == null && activeUrl == null) return
         val next = !Mobile.isDirectEnabled()
         Mobile.setDirectEnabled(next)
-        prefs.edit().putBoolean("direct_enabled", next).apply()
+        prefs.edit()
+            .putBoolean("direct_enabled", next)
+            .putBoolean("direct_opt_out", !next)
+            .apply()
         updateDirectBtn()
     }
 

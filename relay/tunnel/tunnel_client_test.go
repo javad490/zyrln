@@ -145,6 +145,48 @@ func TestTunnelClient_BatchFailoverQuota(t *testing.T) {
 	sess.Close(context.Background())
 }
 
+func TestTunnelClient_BatchBadURLFallback(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var env TunnelEnvelope
+		_ = json.NewDecoder(r.Body).Decode(&env)
+		if len(env.Batch) > 0 {
+			_ = json.NewEncoder(w).Encode(map[string]string{"e": "bad url"})
+			return
+		}
+		if env.Req.Op == TunnelOpOpen {
+			_ = json.NewEncoder(w).Encode(TunnelResponse{OK: true})
+			return
+		}
+		if env.Req.Op == TunnelOpTX {
+			_ = json.NewEncoder(w).Encode(TunnelResponse{OK: true})
+			return
+		}
+		if env.Req.Op == TunnelOpRX {
+			_ = json.NewEncoder(w).Encode(TunnelResponse{OK: true, Data: base64.StdEncoding.EncodeToString([]byte("pong"))})
+			return
+		}
+		http.Error(w, "unexpected", 400)
+	}))
+	defer srv.Close()
+
+	client := NewTunnelClient(srv.Client(), []string{srv.URL}, testFrontDomain(srv), "k", 5*time.Second)
+	sess, err := client.OpenSession(context.Background(), "example.com:443")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	resps, err := sess.Exchange(context.Background(), []TunnelRequest{
+		{Op: TunnelOpTX, Data: base64.StdEncoding.EncodeToString([]byte("ping"))},
+		{Op: TunnelOpRX, WaitMS: 10},
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if len(resps) != 2 || resps[1].Data == "" {
+		t.Fatalf("resps = %+v", resps)
+	}
+	sess.Close(context.Background())
+}
+
 func TestTunnelClient_BatchExchange(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var env TunnelEnvelope

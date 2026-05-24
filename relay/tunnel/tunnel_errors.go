@@ -82,3 +82,14 @@ func tunnelBodyShouldRetry(raw []byte) (retry bool, err error) {
 	}
 	return false, nil
 }
+
+// batchErrorNeedsSequential reports whether batched Apps Script ops should be retried one-by-one.
+// Older deployments handle single "t" ops but not "tb" batches (they return "bad url").
+func batchErrorNeedsSequential(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "bad url") ||
+		strings.Contains(msg, "invalid tunnel batch")
+}

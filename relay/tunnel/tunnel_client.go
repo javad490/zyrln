@@ -455,7 +455,11 @@ func (c *TunnelClient) tryTunnelURL(ctx context.Context, idx int, req TunnelRequ
 		if resp.Error == "" {
 			resp.Error = "tunnel request failed"
 		}
-		return TunnelResponse{}, fmt.Errorf("%s", resp.Error)
+		err := fmt.Errorf("%s", resp.Error)
+		if strings.Contains(resp.Error, "bad url") {
+			err = fmt.Errorf("%w (Apps Script missing tunnel handler or EXIT_TUNNEL_URL points at /relay)", err)
+		}
+		return TunnelResponse{}, err
 	}
 	return resp, nil
 }
@@ -504,39 +508,78 @@ func (s *TunnelSession) Exchange(ctx context.Context, ops []TunnelRequest) ([]Tu
 		}
 	}
 	if len(ops) == 1 {
-		resp, err := s.roundTripRaw(ctx, ops[0])
-		if err != nil {
-			return nil, err
-		}
-		if !resp.OK {
-			if resp.Error == "" {
-				resp.Error = "tunnel request failed"
-			}
-			return []TunnelResponse{resp}, fmt.Errorf("%s", resp.Error)
-		}
-		return []TunnelResponse{resp}, nil
+		return s.exchangeOne(ctx, ops[0])
 	}
 	raw, err := s.client.roundTripBatchPinned(ctx, s.urlIdx, ops, func(idx int) { s.urlIdx = idx })
 	if err != nil {
+		if batchErrorNeedsSequential(err) {
+			if resps, seqErr := s.exchangeSequential(ctx, ops); seqErr == nil {
+				return resps, nil
+			}
+		}
 		s.cleanupAfterBatchError(ops)
 		return nil, err
 	}
 	var batch TunnelBatchResponse
 	if err := json.Unmarshal(raw, &batch); err != nil || len(batch.Results) == 0 {
-		return nil, fmt.Errorf("invalid tunnel batch JSON: %w; body=%s", err, core.PreviewBytes(raw, 256))
+		batchErr := fmt.Errorf("invalid tunnel batch JSON: %w; body=%s", err, core.PreviewBytes(raw, 256))
+		if batchErrorNeedsSequential(batchErr) {
+			if resps, seqErr := s.exchangeSequential(ctx, ops); seqErr == nil {
+				return resps, nil
+			}
+		}
+		return nil, batchErr
 	}
 	if len(batch.Results) != len(ops) {
-		return nil, fmt.Errorf("tunnel batch size mismatch: got %d results for %d ops", len(batch.Results), len(ops))
+		batchErr := fmt.Errorf("tunnel batch size mismatch: got %d results for %d ops", len(batch.Results), len(ops))
+		if batchErrorNeedsSequential(batchErr) {
+			if resps, seqErr := s.exchangeSequential(ctx, ops); seqErr == nil {
+				return resps, nil
+			}
+		}
+		return nil, batchErr
 	}
 	for i, resp := range batch.Results {
 		if !resp.OK {
 			if resp.Error == "" {
 				resp.Error = "tunnel request failed"
 			}
-			return batch.Results, fmt.Errorf("op %d: %s", i, resp.Error)
+			opErr := fmt.Errorf("op %d: %s", i, resp.Error)
+			if batchErrorNeedsSequential(opErr) {
+				if resps, seqErr := s.exchangeSequential(ctx, ops); seqErr == nil {
+					return resps, nil
+				}
+			}
+			return batch.Results, opErr
 		}
 	}
 	return batch.Results, nil
+}
+
+func (s *TunnelSession) exchangeOne(ctx context.Context, op TunnelRequest) ([]TunnelResponse, error) {
+	resp, err := s.roundTripRaw(ctx, op)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		if resp.Error == "" {
+			resp.Error = "tunnel request failed"
+		}
+		return []TunnelResponse{resp}, fmt.Errorf("%s", resp.Error)
+	}
+	return []TunnelResponse{resp}, nil
+}
+
+func (s *TunnelSession) exchangeSequential(ctx context.Context, ops []TunnelRequest) ([]TunnelResponse, error) {
+	resps := make([]TunnelResponse, 0, len(ops))
+	for i, op := range ops {
+		one, err := s.exchangeOne(ctx, op)
+		if err != nil {
+			return resps, fmt.Errorf("op %d: %w", i, err)
+		}
+		resps = append(resps, one...)
+	}
+	return resps, nil
 }
 
 // Close ends the remote session.

@@ -104,15 +104,19 @@ func connectHost(targetHost string) string {
 
 func handleRelayTunnelConnect(local io.ReadWriter, targetHost string, pb *tunnelBundle) {
 	target := NormalizeHostPort(targetHost, "443")
-	if core.IsDirectDomain(connectHost(targetHost)) {
-		if c, ok := local.(net.Conn); ok {
+	host := connectHost(targetHost)
+	if core.IsDirectDomain(host) {
+		if c := asNetConn(local); c != nil {
 			core.Log("info", "direct CONNECT %s", target)
 			core.HandleDirectConnect(c, target)
 			return
 		}
 	}
+	if core.IsGoogleDomain(host) && !core.GetDirectEnabled() {
+		core.Log("info", "tunnel CONNECT %s (direct bypass off)", target)
+	}
 	if pb.tunnel == nil {
-		if c, ok := local.(net.Conn); ok {
+		if c := asNetConn(local); c != nil {
 			_, _ = c.Write([]byte("HTTP/1.1 502 No tunnel configured\r\n\r\n"))
 		}
 		return
@@ -123,17 +127,27 @@ func handleRelayTunnelConnect(local io.ReadWriter, targetHost string, pb *tunnel
 
 	pb.tunnel.waitWarmupBeforeFirstConnect(ctx)
 
-	sess, err := pb.tunnel.NewSession(target)
+	sess, err := pb.tunnel.OpenSession(ctx, target)
 	if err != nil {
-		if c, ok := local.(net.Conn); ok {
+		if c := asNetConn(local); c != nil {
 			_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n"))
 		}
 		core.Log("error", "tunnel CONNECT session %s: %v", target, err)
 		return
 	}
-	if c, ok := local.(net.Conn); ok {
+	if c := asNetConn(local); c != nil {
 		_, _ = c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	}
 	core.Log("info", "tunnel CONNECT %s", target)
 	RunTunnelBridge(ctx, local, sess, target, pb.tunnel.timeout)
+}
+
+func asNetConn(local io.ReadWriter) net.Conn {
+	if c, ok := local.(net.Conn); ok {
+		return c
+	}
+	if bc, ok := local.(*core.BufferedConn); ok && bc.Conn != nil {
+		return bc
+	}
+	return nil
 }
