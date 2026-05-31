@@ -5,7 +5,7 @@
 #   ./scripts/install-vps-relay.sh user@YOUR_VPS_IP
 #
 # Put prebuilt binaries next to this script (no Go needed), or use the zip from:
-#   make vps-relay-bundle  →  dist/zyrln-vps-install-VERSION.zip
+#   make vps-relay-bundle  →  dist/zyrln-VERSION-vps.zip
 #   zyrln-relay-linux-amd64, zyrln-relay-linux-arm64
 #
 # SSH user can be anything (ubuntu, debian, root, …). Non-root users need sudo

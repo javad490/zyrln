@@ -9,6 +9,7 @@ APK_RELEASE   = android/app/build/outputs/apk/release/zyrln-$(APK_VERSION).apk
 DESKTOP_VERSION ?= $(APK_VERSION)
 DIST_DIR      = dist
 APK_DIST      = $(DIST_DIR)/zyrln-$(APK_VERSION)-android.apk
+VPS_DIST      = $(DIST_DIR)/zyrln-$(APK_VERSION)-vps.zip
 DESKTOP_LINUX = $(DIST_DIR)/zyrln-$(DESKTOP_VERSION)-linux-amd64
 DESKTOP_WIN   = $(DIST_DIR)/zyrln-$(DESKTOP_VERSION)-windows-amd64.exe
 DESKTOP_MAC_ARM64 = $(DIST_DIR)/zyrln-$(DESKTOP_VERSION)-darwin-arm64
@@ -71,18 +72,18 @@ proxy:
 gui: desktop
 	./zyrln -gui
 
-## Build both Linux relay binaries and zip for VPS install (dist/zyrln-vps-install-VERSION.zip).
+## Build both Linux relay binaries and zip for VPS install (dist/zyrln-VERSION-vps.zip).
 vps-relay-bundle:
-	@rm -rf $(DIST_DIR)/.vps-bundle $(DIST_DIR)/zyrln-vps-install-$(APK_VERSION).zip
+	@rm -rf $(DIST_DIR)/.vps-bundle $(VPS_DIST)
 	@mkdir -p $(DIST_DIR)/.vps-bundle
 	GOOS=linux GOARCH=amd64 GOCACHE=$(GOCACHE) go build -o $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-amd64 ./relay/exit/
 	GOOS=linux GOARCH=arm64 GOCACHE=$(GOCACHE) go build -o $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-arm64 ./relay/exit/
 	@cp scripts/install-vps-relay.sh scripts/vps-install/README.txt $(DIST_DIR)/.vps-bundle/
 	@chmod +x $(DIST_DIR)/.vps-bundle/install-vps-relay.sh $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-amd64 $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-arm64
-	@cd $(DIST_DIR)/.vps-bundle && zip -rq ../zyrln-vps-install-$(APK_VERSION).zip .
+	@cd $(DIST_DIR)/.vps-bundle && zip -rq ../zyrln-$(APK_VERSION)-vps.zip .
 	@cp $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-amd64 $(DIST_DIR)/.vps-bundle/zyrln-relay-linux-arm64 scripts/
 	@rm -rf $(DIST_DIR)/.vps-bundle
-	@echo "VPS install zip → $(DIST_DIR)/zyrln-vps-install-$(APK_VERSION).zip"
+	@echo "VPS install zip → $(VPS_DIST)"
 	@echo "Install: unzip, then ./install-vps-relay.sh user@VPS_IP"
 
 ## Smoke test the full relay chain.
@@ -138,5 +139,5 @@ android:
 	@echo "APK → $(APK_DIST)"
 
 clean:
-	rm -f zyrln $(AAR_OUT) $(DESKTOP_LINUX) $(DESKTOP_WIN) $(DESKTOP_MAC_ARM64) $(DESKTOP_MAC_AMD64) $(APK_DIST)
+	rm -f zyrln $(AAR_OUT) $(DESKTOP_LINUX) $(DESKTOP_WIN) $(DESKTOP_MAC_ARM64) $(DESKTOP_MAC_AMD64) $(APK_DIST) $(VPS_DIST)
 	cd android && ./gradlew clean 2>/dev/null || true
