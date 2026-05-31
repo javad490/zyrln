@@ -182,7 +182,7 @@ func (h *tunnelHub) handle(ctx context.Context, req tunnelRequest, timeout time.
 			return tunnelResponse{Error: "unknown session"}
 		}
 		wait := time.Duration(req.WaitMS) * time.Millisecond
-		const maxRXWait = 500 * time.Millisecond
+		const maxRXWait = 3 * time.Second
 		if wait < 0 {
 			wait = 0
 		}

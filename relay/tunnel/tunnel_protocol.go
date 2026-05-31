@@ -16,11 +16,11 @@ const (
 	TunnelOpClose = "close"
 	TunnelOpPing  = "ping"
 
-	// Idle RX poll backoff (no local TX pending).
-	tunnelMinReadWait = 30 * time.Millisecond
-	tunnelMaxReadWait = 300 * time.Millisecond
-	// RX bundled with TX — minimal wait so upload batches return quickly.
-	tunnelRXWaitWithTX = 1 * time.Millisecond
+	// Idle RX long-poll backoff (background reader goroutine).
+	tunnelMinReadWait = 500 * time.Millisecond
+	tunnelMaxReadWait = 3 * time.Second
+	// RX bundled with TX (legacy path) — wait for server reply in same batch when used.
+	tunnelRXWaitWithTX = 500 * time.Millisecond
 
 	// MaxTXPerBatch caps tx ops per Apps Script POST (VPS executes sequentially).
 	MaxTXPerBatch = 8

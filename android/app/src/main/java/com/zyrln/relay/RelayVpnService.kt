@@ -31,6 +31,9 @@ class RelayVpnService : VpnService() {
         const val NOTIF_ID = 1
         const val CHANNEL_ID = "zyrln_vpn"
         private const val PROXY_PORT = 8085
+        private const val VPN_ADDRESS = "10.99.0.2"
+        private const val VPN_PREFIX = 24
+        private const val VPN_MTU = 1500
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -85,9 +88,14 @@ class RelayVpnService : VpnService() {
         }
 
         try {
+            // TUN routes all IPv4; Go forwarder dials tunnel/direct per flow. HTTP proxy kept for proxy-aware apps.
             vpnInterface = Builder()
                 .setSession(getString(R.string.vpn_session_name))
-                .addAddress("10.99.0.2", 32)
+                .setMtu(VPN_MTU)
+                .addAddress(VPN_ADDRESS, VPN_PREFIX)
+                .addRoute("0.0.0.0", 0)
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1")
                 .setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", PROXY_PORT))
                 .establish()
             if (vpnInterface == null) {
@@ -101,7 +109,16 @@ class RelayVpnService : VpnService() {
                 vpnInterface = null
                 return
             }
-            Log.i(TAG, "system HTTP proxy established")
+            val tunErr = Mobile.attachTUN(vpnInterface!!.fd.toLong())
+            if (tunErr.isNotEmpty()) {
+                Log.e(TAG, "TUN forwarder failed: $tunErr")
+                failStart(getString(R.string.error_relay_start_failed, tunErr), generation)
+                return
+            }
+            Log.i(
+                TAG,
+                "TUN forwarder active fd=${vpnInterface!!.fd} routes=0.0.0.0/0 proxy=127.0.0.1:$PROXY_PORT"
+            )
             sendBroadcast(Intent(ACTION_STARTED))
         } catch (e: Exception) {
             Log.e(TAG, "VPN establish failed: ${e.message}")

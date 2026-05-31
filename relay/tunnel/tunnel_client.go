@@ -78,6 +78,11 @@ func (c *TunnelClient) WaitWarmup(ctx context.Context) error {
 	}
 }
 
+// WaitWarmupBeforeFirstConnect blocks only on the first tunnel open after startup.
+func (c *TunnelClient) WaitWarmupBeforeFirstConnect(ctx context.Context) {
+	c.waitWarmupBeforeFirstConnect(ctx)
+}
+
 // waitWarmupBeforeFirstConnect blocks only on the first tunnel CONNECT after startup.
 func (c *TunnelClient) waitWarmupBeforeFirstConnect(ctx context.Context) {
 	if c == nil || c.WarmReady() {
@@ -506,9 +511,6 @@ func (s *TunnelSession) Exchange(ctx context.Context, ops []TunnelRequest) ([]Tu
 		if ops[i].Op == TunnelOpOpen && ops[i].Target == "" {
 			ops[i].Target = s.target
 		}
-	}
-	if len(ops) == 1 {
-		return s.exchangeOne(ctx, ops[0])
 	}
 	raw, err := s.client.roundTripBatchPinned(ctx, s.urlIdx, ops, func(idx int) { s.urlIdx = idx })
 	if err != nil {

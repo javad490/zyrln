@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"zyrln/relay/core"
+	"zyrln/relay/tun"
 	"zyrln/relay/tunnel"
 )
 
@@ -42,6 +43,7 @@ var (
 	mu       sync.Mutex
 	server   *http.Server
 	listener net.Listener
+	tunEng   *tun.Engine
 	lastErr  string
 
 	logMu      sync.Mutex
@@ -247,6 +249,7 @@ func Ping(appScriptURL, authKey string) string {
 func Stop() {
 	mu.Lock()
 	defer mu.Unlock()
+	stopTUNLocked()
 	tunnel.StopActiveTunnel()
 	if listener != nil {
 		_ = listener.Close()
@@ -319,4 +322,37 @@ func SetSocketProtector(p SocketProtector) {
 		return
 	}
 	core.SetSocketProtectFunc(func(fd int) { p.Protect(int64(fd)) })
+}
+
+func stopTUNLocked() {
+	if tunEng != nil {
+		tunEng.Stop()
+		tunEng = nil
+	}
+}
+
+// AttachTUN starts the TUN TCP forwarder on an Android VpnService fd.
+// Call after StartTunnel/StartDirect and VPN establish().
+func AttachTUN(tunFD int64) string {
+	mu.Lock()
+	defer mu.Unlock()
+	stopTUNLocked()
+	if server == nil {
+		lastErr = "proxy not running"
+		return lastErr
+	}
+	cfg := tun.Config{
+		Tunnel:     tunnel.ActiveTunnelClient(),
+		DirectOnly: tunnel.ActiveTunnelClient() == nil,
+		Timeout:    defaultTimeout,
+	}
+	eng, err := tun.Start(int(tunFD), cfg)
+	if err != nil {
+		lastErr = err.Error()
+		emitLog("error", lastErr)
+		return lastErr
+	}
+	tunEng = eng
+	emitLog("system", "TUN TCP forwarder started")
+	return ""
 }

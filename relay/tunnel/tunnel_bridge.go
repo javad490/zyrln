@@ -39,7 +39,7 @@ func encodeTXChunk(chunk []byte) string {
 }
 
 // RunTunnelBridge copies bytes between local and a relay tunnel session until both sides finish.
-// The first Apps Script batch includes open+tx(+rx) so connect does not cost a separate round trip.
+// TX and RX use separate Apps Script requests so uploads are not blocked waiting for polls.
 func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSession, target string, opTimeout time.Duration) {
 	if sess == nil || sess.client == nil {
 		core.Log("error", "tunnel bridge %s: nil session", target)
@@ -58,10 +58,18 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 
 	buf := make([]byte, TunnelChunkSize)
 	pending := make([]byte, 0, TunnelChunkSize*2)
-	wait := tunnelMinReadWait
 	localDone := false
 	lastDataAt := time.Now()
 	localConn, _ := local.(net.Conn)
+
+	rxFailed := make(chan error, 1)
+	var rxWG sync.WaitGroup
+	rxWG.Add(1)
+	go runTunnelRXLoop(ctx, local, sess, target, opTimeout, rxFailed, &rxWG)
+	defer func() {
+		cancel()
+		rxWG.Wait()
+	}()
 
 	shouldFlushTX := func() bool {
 		if len(pending) == 0 {
@@ -150,39 +158,18 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 		}
 	}
 
-	exchange := func(ops []TunnelRequest) error {
+	exchangeTX := func(ops []TunnelRequest) error {
 		if len(ops) == 0 {
 			return nil
 		}
 		ops = prependOpen(ops)
 		exCtx, exCancel := context.WithTimeout(ctx, opTimeout)
-		resps, err := sess.Exchange(exCtx, ops)
+		_, err := sess.Exchange(exCtx, ops)
 		exCancel()
 		if err != nil {
 			return err
 		}
 		markOpened(ops)
-		if ops[len(ops)-1].Op != TunnelOpRX {
-			return nil
-		}
-		resp := resps[len(resps)-1]
-		if resp.Data == "" {
-			if wait < tunnelMaxReadWait {
-				wait += tunnelMinReadWait
-				if wait > tunnelMaxReadWait {
-					wait = tunnelMaxReadWait
-				}
-			}
-			return nil
-		}
-		wait = tunnelMinReadWait
-		data, err := base64.StdEncoding.DecodeString(resp.Data)
-		if err != nil {
-			return err
-		}
-		if _, err := local.Write(data); err != nil {
-			return err
-		}
 		return nil
 	}
 
@@ -193,11 +180,7 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 				return nil
 			}
 			moreTX := len(pending) >= TunnelChunkSize && !localDone
-			ops = append(ops, TunnelRequest{
-				Op:     TunnelOpRX,
-				WaitMS: tunnelRXWaitMS(true, wait),
-			})
-			if err := exchange(ops); err != nil {
+			if err := exchangeTX(ops); err != nil {
 				return err
 			}
 			if !moreTX {
@@ -206,16 +189,19 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 		}
 	}
 
-	flushRX := func() error {
-		return exchange([]TunnelRequest{{
-			Op:     TunnelOpRX,
-			WaitMS: tunnelRXWaitMS(false, wait),
-		}})
+	stopBridge := func() {
+		cancel()
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case err := <-rxFailed:
+			stopBridge()
+			if err != nil {
+				core.Log("error", "tunnel rx %s: %v", target, err)
+			}
 			return
 		default:
 		}
@@ -233,6 +219,7 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 					if err != io.EOF && ctx.Err() == nil {
 						if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
 							core.Log("error", "tunnel local read %s: %v", target, err)
+							stopBridge()
 							return
 						}
 					}
@@ -253,6 +240,7 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 					localDone = true
 					if err != io.EOF && ctx.Err() == nil {
 						core.Log("error", "tunnel local read %s: %v", target, err)
+						stopBridge()
 						return
 					}
 				}
@@ -265,6 +253,7 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 				continue
 			}
 			if err := flushTX(); err != nil {
+				stopBridge()
 				if ctx.Err() == nil {
 					core.Log("error", "tunnel flush %s: %v", target, err)
 				}
@@ -273,17 +262,79 @@ func RunTunnelBridge(ctx context.Context, local io.ReadWriter, sess *TunnelSessi
 			continue
 		}
 
-		if !localDone {
-			if err := flushRX(); err != nil {
-				if ctx.Err() == nil {
-					core.Log("error", "tunnel poll %s: %v", target, err)
-				}
-				return
+		if localDone {
+			stopBridge()
+			return
+		}
+
+		// RX goroutine polls the tunnel; avoid busy-spin when idle.
+		time.Sleep(localPollWait)
+	}
+}
+
+func runTunnelRXLoop(ctx context.Context, local io.Writer, sess *TunnelSession, target string, opTimeout time.Duration, failed chan<- error, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	rxWait := tunnelMinReadWait
+	fail := func(err error) {
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		select {
+		case failed <- err:
+		default:
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		ops := []TunnelRequest{{
+			Op:     TunnelOpRX,
+			WaitMS: tunnelRXWaitMS(false, rxWait),
+		}}
+		if !sess.opened.Load() {
+			sess.openSent.Store(true)
+			ops = append([]TunnelRequest{{Op: TunnelOpOpen, ID: sess.id, Target: sess.target}}, ops...)
+		}
+
+		exCtx, exCancel := context.WithTimeout(ctx, opTimeout)
+		resps, err := sess.Exchange(exCtx, ops)
+		exCancel()
+		if err != nil {
+			fail(err)
+			return
+		}
+		for _, op := range ops {
+			if op.Op == TunnelOpOpen {
+				sess.opened.Store(true)
+				break
 			}
 		}
 
-		if localDone && len(pending) == 0 {
-			_ = flushRX()
+		resp := resps[len(resps)-1]
+		if resp.Data == "" {
+			if rxWait < tunnelMaxReadWait {
+				rxWait += tunnelMinReadWait
+				if rxWait > tunnelMaxReadWait {
+					rxWait = tunnelMaxReadWait
+				}
+			}
+			continue
+		}
+		rxWait = tunnelMinReadWait
+
+		data, err := base64.StdEncoding.DecodeString(resp.Data)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if _, err := local.Write(data); err != nil {
+			fail(err)
 			return
 		}
 	}
