@@ -47,6 +47,7 @@ TODO.md
 zyrln-linux-amd64
 docs/node_modules/
 docs/.vitepress/cache/
+.wrangler/
 config.env.profiles.json
 zyrln-*
 !zyrln-logo.png
